@@ -13,18 +13,17 @@
 // 1110  OUT    OUT = A
 // 1111  HLT    halt
 
-module ALU #(
+module alu #(
     parameter WIDTH = 8
 ) (
-    input  logic             clk,
     input  logic [WIDTH-1:0] a,
     input  logic [WIDTH-1:0] b,
     input  logic [3:0]       op,
     output logic [WIDTH-1:0] result,
-    output reg               zero,
-    output reg               carry_out,
-    output logic             wr
+    output logic             zero,
+    output logic             carry_out
 );
+
     always_comb begin
         case (op)
             4'b0000: result = b;               // LDA
@@ -36,20 +35,11 @@ module ALU #(
             4'b0110: result = b;               // JC
             4'b0111: result = b;               // JZ
             4'b1110: result = a;               // OUT
-            4'b1111: result = {WIDTH{1'b0}};   // HLT
+            4'b1111: result = {WIDTH{1'b0}};  // HLT
             default: result = {WIDTH{1'b0}};   // Default case
         endcase
 
-        wr = (op == 4'b0000) || (op == 4'b0001) || (op == 4'b0010) || (op == 4'b0100); // Write enable for some operation
-    end
-
-    always_ff @(posedge clk) begin
-        if (op == 4'b0001 || op == 4'b0010) begin
-            zero <= (result == {WIDTH{1'b0}});
-            carry_out <= (op == 4'b0001) ? (result < a) : (op == 4'b0010) ? (a < b) : 1'b0;
-        end else begin
-            zero <= 1'b0;
-            carry_out <= 1'b0;
-        end
+        zero = (result == {WIDTH{1'b0}});
+        carry_out = (op == 4'b0001) ? (result < a) : (op == 4'b0010) ? (a < b) : 1'b0;
     end
 endmodule
