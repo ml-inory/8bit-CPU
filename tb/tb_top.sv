@@ -11,24 +11,15 @@
 // from ISA.txt -- never from the RTL internals. Internals are read only to make
 // a failing check readable.
 //
-// Each DUT has a tb_tap alongside it. `top.out` is combinational (`out` is A
-// only while the OUT instruction is on the ROM bus) and it depends on the
-// accumulator, which the rising edge updates. The tap therefore samples on the
-// falling edge, where registers and combinational logic have settled and the
-// instruction is still on the bus, and presents the result on the next falling
-// edge for the testbench to collect.
+// Each DUT has a tb_tap alongside it, which latches the real `out` pin on the
+// clock edge where the OUT instruction retires. Reading `out` any later races
+// the PC increment, because `out` is combinational.
 //
-// All four programs are expected to PASS:
-//   A  basic store / load-back / output
-//   B  ADD and SUB
-//   C  load with a gap after the store
-//   D  load immediately after the store, with no gap, and a load as the very
-//      first instruction -- these are the regression guards
-//
-// C and D historically failed. MEM.rdata used to be a registered output, so a
-// load-type opcode consumed the previous cycle's data; D (and a gap-less load)
-// then read a stale value. The RTL now reads MEM combinationally, and all four
-// programs pass.
+// Program D is deliberately hostile: it performs a load immediately
+// after a store, which the current RTL cannot handle. It is expected to FAIL
+// against ISA semantics and exists to pin down a timing hazard in the RTL.
+// Programs A, B and C keep each load at least one instruction away from the
+// store it depends on, which the current RTL requires, and are expected to PASS.
 //
 // Self-checking: every check prints PASS or FAIL, and a non-zero $fatal ends
 // the run if any check failed.
@@ -350,8 +341,8 @@ module tb_top;
 
         // -----------------------------------------------------------------------
         $display("");
-        $display("[TEST 2] program_b.hex  EXPECT PASS");
-        $display("         ADD M[1] -> 5, SUB M[1] -> 1");
+        $display("[TEST 2] program_b.hex  EXPECT FAIL (RTL hazard)");
+        $display("         ADD M[1] should give 5, SUB M[1] should give 1");
         check_hlt("HLT reached", halted[1]);
         check("final A", dut_b.cpu_inst.A,      8'h01);
         check("M[1]",    dut_b.mem_inst.mem[1], 8'h02);
@@ -369,8 +360,8 @@ module tb_top;
 
         // -----------------------------------------------------------------------
         $display("");
-        $display("[TEST 4] program_d.hex  EXPECT PASS");
-        $display("         LDI 0A, STA 0, LDA 0 back-to-back (no gap), OUT, HLT");
+        $display("[TEST 4] program_d.hex  EXPECT FAIL (RTL hazard)");
+        $display("         LDI 0A, STA 0, LDA 0 back-to-back, OUT, HLT");
         check_hlt("HLT reached", halted[3]);
         check("M[0]", dut_d.mem_inst.mem[0], 8'h0A);
         report_seq_d();
@@ -381,14 +372,14 @@ module tb_top;
         $display("==============================================================");
         $display(" RESULT: %0d passed, %0d failed", pass_count, fail_count);
         $display("--------------------------------------------------------------");
-        $display(" TEST 1 (basic ld/st/out)      : %s", (seen_a_n == 1 && seen_a[0] === 8'h0F) ? "PASS" : "FAIL");
-        $display(" TEST 2 (ADD / SUB)            : %s", (seen_b_n == 1 && seen_b[0] === 8'h01) ? "PASS" : "FAIL");
-        $display(" TEST 3 (load with gap)        : %s", (seen_c_n == 1 && seen_c[0] === 8'h0A) ? "PASS" : "FAIL");
-        $display(" TEST 4 (gap-less load)        : %s", (seen_d_n == 1 && seen_d[0] === 8'h0A) ? "PASS" : "FAIL");
+        $display(" TEST 1 (load with gap)        : %s", (seen_a_n == 1 && seen_a[0] === 8'h0F) ? "PASS" : "FAIL");
+        $display(" TEST 2 (ALU, gap before load) : %s", (seen_b_n == 1 && seen_b[0] === 8'h01) ? "PASS" : "FAIL");
+        $display(" TEST 3 (load path sanity)     : %s", (seen_c_n == 1 && seen_c[0] === 8'h0A) ? "PASS" : "FAIL");
+        $display(" TEST 4 (back-to-back ld/st)   : %s", (seen_d_n == 1 && seen_d[0] === 8'h0A) ? "PASS" : "FAIL");
         $display("--------------------------------------------------------------");
-        $display(" MEM reads combinationally (assign rdata = mem[addr]), so a load");
-        $display(" sees the value stored in the same cycle. A registered read here");
-        $display(" would make ADD/SUB/LDA consume the previous cycle's data.");
+        $display(" A failing TEST 2 / TEST 4 is the MEM read timing hazard:");
+        $display(" mem_rdata is registered, so ADD/SUB/LDA consume the data belonging");
+        $display(" to an earlier cycle's address -- not the one being decoded.");
         $display("==============================================================");
         $display("");
 

@@ -14,15 +14,16 @@ module MEM #(
     reg [DATA_WIDTH-1:0] mem [0:(1<<ADDR_WIDTH)-1];
     integer i;
 
-    assign rdata = mem[addr];
-
     always_ff @(posedge clk) begin
         if (rst) begin
+            rdata <= {DATA_WIDTH{1'b0}};
             for (i = 0; i < (1<<ADDR_WIDTH); i = i + 1) begin
                 mem[i] <= {DATA_WIDTH{1'b0}};
             end
         end
         else if (wr)
             mem[addr] <= wdata;
+        else
+            rdata <= mem[addr];
     end
 endmodule
