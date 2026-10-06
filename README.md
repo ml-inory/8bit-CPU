@@ -21,10 +21,10 @@
 
 | 文件 | 模块 | 说明 |
 | --- | --- | --- |
-| `rtl/top.sv` | `top` | 顶层：连接 CPU、ROM、RAM |
-| `rtl/cpu.sv` | `CPU` | 取指译码、控制信号、累加器 `A` |
+| `rtl/top.sv` | `top` | 顶层：连接 CPU、ROM、RAM，并引出 `instr_valid`（停机状态） |
+| `rtl/cpu.sv` | `CPU` | 取指译码、控制信号、累加器 `A`、HLT 停机 |
 | `rtl/alu.sv` | `ALU` | 加减法、零标志 `Z`、进位标志 `C` |
-| `rtl/pc.sv` | `PC` | 程序计数器 |
+| `rtl/pc.sv` | `PC` | 程序计数器（带 `en`，为低时冻结） |
 | `rtl/mem.sv` | `MEM` | 数据存储器，16 × 8 位，组合读 |
 | `rtl/rom.sv` | `ROM` | 指令存储器，256 × 8 位，`$readmemh` 初始化 |
 
@@ -41,7 +41,7 @@
 
 全部检查通过时退出码为 `0`，波形写入 `build/tb_top.vcd`。
 
-四个测试程序并行运行，期望值全部来自 `ISA.txt`，与 RTL 实现无关：
+五个测试程序并行运行，期望值全部来自 `ISA.txt`，与 RTL 实现无关：
 
 | 测试 | 程序 | 结果 |
 | --- | --- | --- |
@@ -49,32 +49,34 @@
 | TEST 2 | `ADD M[1]` / `SUB M[1]` | PASS |
 | TEST 3 | `STA 0, LDI 00, LDA 0, OUT, HLT` | PASS |
 | TEST 4 | `LDI 0A, STA 0, LDA 0, OUT, HLT`（无间隔） | PASS |
+| TEST 5 | `0x00-0x01` 下溢为 `0xFF`，`+0x01` 进位，`JC 0x9` | PASS |
+| TEST 6 | HLT 之后 PC / A / 存储器必须冻结 | PASS |
 
-当前结果：`18 passed, 0 failed`。
+当前结果：`25 passed, 0 failed`。
 
 TEST 3 与 TEST 4 是访存通路的回归保护：TEST 4 的 store 与 load 背靠背、中间
 没有间隔，TEST 3 的 load 作为程序第一条指令。如果 `MEM` 的读改回寄存器输出，
-TEST 4 会立刻失败。
+TEST 4 会立刻失败。TEST 1 在 `HLT` 后面故意放了一条 `LDI 01`：若 PC 不停，
+`A` 会变成 `0x01`，TEST 6 就会失败。
 
 ## 已知问题
 
-### 1. HLT 未实现
+### 1. 跳转范围受 4 位操作数限制
 
-`cpu.sv` 译码了 `1111`，但没有真正停住 PC，测试平台只能靠「当前 ROM 字是
-`HLT`」来判断程序结束。
+`cpu.sv` 把 4 位的 `addr` 接到 8 位的 `PC.data_in`，跳转地址高 4 位补零，
+因此 `JMP`/`JC`/`JZ` 只能跳到 `0x00`–`0x0F`。这是「4 位操作数」的直接后果，
+不是接线错误；若要跳遍 256 字的 ROM，需要改成两字节指令或页寄存器。
+编译时 Icarus 会给出 `Port 4 (data_in) of module PC expects 8 bit(s), given 4` 警告。
 
-### 2. PC 位宽不匹配
+### 2. `LDI` 只能装载 `0x00`–`0x0F`
 
-`cpu.sv:70` 把 4 位的 `addr` 接到 8 位的 `PC.data_in`，跳转地址高 4 位被补零，
-因此 `JMP`/`JC`/`JZ` 实际只能跳到 `0x00`–`0x0F`。编译时 Icarus 会给出
-`Port 4 (data_in) of module PC expects 8 bit(s), given 4` 警告。
+`LDI imm` 的立即数就是操作数本身（`addr` 字段，4 位），所以 `LDI 0xFF` 实际
+装载的是 `0x0F`。要构造更大的常量需要用 `ADD`/`SUB` 逐步累加（TEST 5 就是
+先用 `0x00-0x01` 下溢得到 `0xFF`）。
 
-### 3. ISA 文档与 RTL 的 JC/JZ 操作码不一致
+## 已修复
 
-`ISA.txt` 记为 `JZ = 0110`、`JC = 0111`；而 `cpu.sv` 的注释与实现是
-`0110 = JC`、`0111 = JZ`（见 `cpu.sv:11-12` 与 `cpu.sv:52`）。两者需要对齐。
-
-### 已修复：存储器读时序
+### 存储器读时序
 
 `MEM.rdata` 原本是寄存器输出，而 `CPU` 在同一个周期就把 `mem_rdata` 当操作数
 送进 ALU，导致 `LDA`/`ADD`/`SUB` 读到的是上一次读地址的数据；写周期又会完全
@@ -85,6 +87,35 @@ assign rdata = mem[addr];
 ```
 
 写仍在时钟边沿。TEST 3 / TEST 4 覆盖这个场景。
+
+### HLT 现在真正停机
+
+`cpu.sv` 增加了一个 `instr_valid` 寄存器（复位为 1）：译码到 `1111` 后，它拉低，
+从而同时冻结 PC、累加器写入与 `mem_wr`。`pc_en` 额外在**译码到 HLT 的当拍**就
+拉低，所以 `HLT` 后面那个字节永远不会被取指。`top` 把 `instr_valid` 引出为一个
+端口，测试平台据此等待停机（TEST 6）。
+
+`PC` 模块相应增加了一个 `en` 输入，为低时保持当前值。
+
+### ADD 进位判断
+
+原来的 `carry_out <= (result < a)` 检不出回绕进位：`0xFF + 0x01` 得到 `0x00`，
+而 `0x00 < 0xFF` 为真，看似成立；但 `0x80 + 0x80` 得到 `0x00` 也成立，真正漏掉
+的是结果不低于被加数的情况。现在用加宽一位的和取第 8 位：
+
+```systemverilog
+logic [WIDTH:0] sum;
+assign sum = {1'b0, a} + {1'b0, b};
+...
+carry_out <= (op == 4'b0001) ? sum[WIDTH] : (op == 4'b0010) ? (a < b) : 1'b0;
+```
+
+`SUB` 的借位仍用 `a < b`。TEST 5 覆盖这条通路（含 `JC` 真的跳过去）。
+
+### ISA.txt 的 JC/JZ 操作码
+
+`ISA.txt` 原记为 `JZ = 0110`、`JC = 0111`，与 Logisim 电路和 `cpu.sv` 实现的
+`0110 = JC`、`0111 = JZ` 相反。已按电路与 RTL 对齐，改的是文档。
 
 ## 电路结构
 
@@ -107,10 +138,10 @@ assign rdata = mem[addr];
 | ADD | 0001 | `ADD addr` | `0x1_` | `A ← A + M[addr]` | 加法 |
 | SUB | 0010 | `SUB addr` | `0x2_` | `A ← A - M[addr]` | 减法 |
 | STA | 0011 | `STA addr` | `0x3_` | `M[addr] ← A` | 存数 |
-| LDI | 0100 | `LDI imm` | `0x4_` | `A ← imm` | 立即数 |
+| LDI | 0100 | `LDI imm` | `0x4_` | `A ← imm` | 立即数（仅 `0x0`–`0xF`） |
 | JMP | 0101 | `JMP addr` | `0x5_` | `PC ← addr` | 无条件跳转 |
-| JZ | 0110 | `JZ addr` | `0x6_` | `if Z=1 then PC ← addr` | 零跳转 |
-| JC | 0111 | `JC addr` | `0x7_` | `if C=1 then PC ← addr` | 进位跳转 |
+| JC | 0110 | `JC addr` | `0x6_` | `if C=1 then PC ← addr` | 进位跳转 |
+| JZ | 0111 | `JZ addr` | `0x7_` | `if Z=1 then PC ← addr` | 零跳转 |
 | OUT | 1110 | `OUT` | `0xE0` | `Output ← A` | 输出 |
 | HLT | 1111 | `HLT` | `0xF0` | 停时钟 | 停机 |
 

@@ -26,7 +26,9 @@ module CPU #(
     output logic [MEM_ADDR_WIDTH-1:0] mem_addr,
     output logic mem_wr,
     output logic [DATA_WIDTH-1:0] mem_wdata,
-    output logic [DATA_WIDTH-1:0] out
+    output logic [DATA_WIDTH-1:0] out,
+    output logic instr_valid   // 0 once HLT has been decoded; public so a
+                               // testbench can wait for the CPU to stop
 );
     reg [DATA_WIDTH-1:0] A; // Accumulator
     logic [DATA_WIDTH-1:0] B; // Temporary register for ALU operations
@@ -41,16 +43,28 @@ module CPU #(
     logic alu_wr;
 
     logic pc_load;
+    logic pc_en;
 
     assign op = rom_data[ROM_ADDR_WIDTH-1:ROM_ADDR_WIDTH/2];
     assign addr = rom_data[ROM_ADDR_WIDTH/2-1:0];
     assign rom_addr = PC;
     assign mem_addr = addr;
     assign mem_wdata = alu_result;
-    assign mem_wr = (op == 4'b0011);
+    assign mem_wr = (op == 4'b0011) && instr_valid;
     assign out = (op == 4'b1110) ? A : {DATA_WIDTH{1'b0}};
     assign pc_load = (op == 4'b0101) || (op == 4'b0110 && alu_carry_out) || (op == 4'b0111 && alu_zero);
+    // HLT freezes the PC on the cycle it is decoded, so the word after the HLT
+    // is never fetched. instr_valid then keeps everything else frozen.
+    assign pc_en = (op != 4'b1111) && instr_valid;
     assign B = (op == 4'b0000 || op == 4'b0001 || op == 4'b0010) ? mem_rdata : addr;
+
+    // HLT: resets to 1 so the first instruction after reset executes; the HLT
+    // instruction itself is still decoded (it is on the ROM bus) but from the
+    // next cycle on the PC, the accumulator and the memory write are gated.
+    always_ff @(posedge clk) begin
+        if (rst) instr_valid <= 1'b1;
+        else     instr_valid <= (op != 4'b1111);
+    end
 
     ALU #(
         .WIDTH(DATA_WIDTH)
@@ -70,6 +84,7 @@ module CPU #(
     ) pc_inst (
         .clk(clk),
         .rst(rst),
+        .en(pc_en),
         .load(pc_load),
         .data_in(addr),
         .pc_out(PC)
@@ -79,7 +94,7 @@ module CPU #(
         if (rst) begin
             A <= {DATA_WIDTH{1'b0}};
         end else begin
-            if (alu_wr) begin
+            if (alu_wr && instr_valid) begin
                 A <= alu_result;
             end
         end

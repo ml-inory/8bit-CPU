@@ -4,7 +4,7 @@
 // -----------------------------------------------------------------------------
 // Testbench for the 8-bit CPU (rtl/top.sv)
 //
-// ROM contents are a compile-time parameter, so four independent DUTs run four
+// ROM contents are a compile-time parameter, so five independent DUTs run four
 // programs in parallel off one clock. Every DUT is driven only through its
 // top-level ports (clk, rst) and observed only through top-level outputs
 // (`out`, and `rom_addr`/`rom_data` to detect HLT). Expected values are derived
@@ -18,17 +18,18 @@
 // instruction is still on the bus, and presents the result on the next falling
 // edge for the testbench to collect.
 //
-// All four programs are expected to PASS:
-//   A  basic store / load-back / output
+// All five programs are expected to PASS:
+//   A  basic store / load-back / output, plus a post-HLT freeze check
 //   B  ADD and SUB
 //   C  load with a gap after the store
 //   D  load immediately after the store, with no gap, and a load as the very
 //      first instruction -- these are the regression guards
+//   E  carry out of a wrapping ADD reaches JC
 //
 // C and D historically failed. MEM.rdata used to be a registered output, so a
 // load-type opcode consumed the previous cycle's data; D (and a gap-less load)
 // then read a stale value. The RTL now reads MEM combinationally, and all four
-// programs pass.
+// programs pass, and HLT now genuinely stops the CPU.
 //
 // Self-checking: every check prints PASS or FAIL, and a non-zero $fatal ends
 // the run if any check failed.
@@ -50,25 +51,29 @@ module tb_top;
     logic clk;
     logic rst;
 
-    logic [DATA_WIDTH-1:0] out_a, out_b, out_c, out_d;
+    logic [DATA_WIDTH-1:0] out_a, out_b, out_c, out_d, out_e;
 
     // ---- expected output sequences (built from the program listings) ----------
     logic [DATA_WIDTH-1:0] exp_a [0:MAX_OUT-1];
     logic [DATA_WIDTH-1:0] exp_b [0:MAX_OUT-1];
     logic [DATA_WIDTH-1:0] exp_c [0:MAX_OUT-1];
     logic [DATA_WIDTH-1:0] exp_d [0:MAX_OUT-1];
-    int exp_a_n, exp_b_n, exp_c_n, exp_d_n;
+    logic [DATA_WIDTH-1:0] exp_e [0:MAX_OUT-1];
+    int exp_a_n, exp_b_n, exp_c_n, exp_d_n, exp_e_n;
 
     // ---- observed -------------------------------------------------------------
     logic [DATA_WIDTH-1:0] seen_a [0:MAX_OUT-1];
     logic [DATA_WIDTH-1:0] seen_b [0:MAX_OUT-1];
     logic [DATA_WIDTH-1:0] seen_c [0:MAX_OUT-1];
     logic [DATA_WIDTH-1:0] seen_d [0:MAX_OUT-1];
-    int seen_a_n, seen_b_n, seen_c_n, seen_d_n;
+    logic [DATA_WIDTH-1:0] seen_e [0:MAX_OUT-1];
+    int seen_a_n, seen_b_n, seen_c_n, seen_d_n, seen_e_n;
 
     int pass_count = 0;
     int fail_count = 0;
     int step_count = 0;
+
+    logic                  iv_a, iv_b, iv_c, iv_d, iv_e;   // DUT instr_valid (0 after HLT)
 
     // ---------------------------------------------------------------------------
     // DUTs + observation taps
@@ -76,25 +81,30 @@ module tb_top;
     top #(
         .DATA_WIDTH(DATA_WIDTH), .MEM_ADDR_WIDTH(MEM_ADDR_WIDTH),
         .ROM_ADDR_WIDTH(ROM_ADDR_WIDTH), .ROM_INIT_FILE("tb/program_a.hex")
-    ) dut_a (.clk(clk), .rst(rst), .out(out_a));
+    ) dut_a (.clk(clk), .rst(rst), .out(out_a), .instr_valid(iv_a));
 
     top #(
         .DATA_WIDTH(DATA_WIDTH), .MEM_ADDR_WIDTH(MEM_ADDR_WIDTH),
         .ROM_ADDR_WIDTH(ROM_ADDR_WIDTH), .ROM_INIT_FILE("tb/program_b.hex")
-    ) dut_b (.clk(clk), .rst(rst), .out(out_b));
+    ) dut_b (.clk(clk), .rst(rst), .out(out_b), .instr_valid(iv_b));
 
     top #(
         .DATA_WIDTH(DATA_WIDTH), .MEM_ADDR_WIDTH(MEM_ADDR_WIDTH),
         .ROM_ADDR_WIDTH(ROM_ADDR_WIDTH), .ROM_INIT_FILE("tb/program_c.hex")
-    ) dut_c (.clk(clk), .rst(rst), .out(out_c));
+    ) dut_c (.clk(clk), .rst(rst), .out(out_c), .instr_valid(iv_c));
 
     top #(
         .DATA_WIDTH(DATA_WIDTH), .MEM_ADDR_WIDTH(MEM_ADDR_WIDTH),
         .ROM_ADDR_WIDTH(ROM_ADDR_WIDTH), .ROM_INIT_FILE("tb/program_d.hex")
-    ) dut_d (.clk(clk), .rst(rst), .out(out_d));
+    ) dut_d (.clk(clk), .rst(rst), .out(out_d), .instr_valid(iv_d));
 
-    logic [DATA_WIDTH-1:0] dout_a, dout_b, dout_c, dout_d;
-    logic                  dvalid_a, dvalid_b, dvalid_c, dvalid_d;
+    top #(
+        .DATA_WIDTH(DATA_WIDTH), .MEM_ADDR_WIDTH(MEM_ADDR_WIDTH),
+        .ROM_ADDR_WIDTH(ROM_ADDR_WIDTH), .ROM_INIT_FILE("tb/program_e.hex")
+    ) dut_e (.clk(clk), .rst(rst), .out(out_e), .instr_valid(iv_e));
+
+    logic [DATA_WIDTH-1:0] dout_a, dout_b, dout_c, dout_d, dout_e;
+    logic                  dvalid_a, dvalid_b, dvalid_c, dvalid_d, dvalid_e;
 
     tb_tap tap_a (.clk(clk), .rst(rst), .rom_data(dut_a.rom_data),
                   .top_out(out_a), .dout(dout_a), .dout_valid(dvalid_a));
@@ -104,6 +114,8 @@ module tb_top;
                   .top_out(out_c), .dout(dout_c), .dout_valid(dvalid_c));
     tb_tap tap_d (.clk(clk), .rst(rst), .rom_data(dut_d.rom_data),
                   .top_out(out_d), .dout(dout_d), .dout_valid(dvalid_d));
+    tb_tap tap_e (.clk(clk), .rst(rst), .rom_data(dut_e.rom_data),
+                  .top_out(out_e), .dout(dout_e), .dout_valid(dvalid_e));
 
     // ---------------------------------------------------------------------------
     // Clock
@@ -127,7 +139,7 @@ module tb_top;
 
     // Advance one clock. After the rising edge the taps hold the OUT values that
     // retired on that edge.
-    task automatic step(input bit [3:0] active);
+    task automatic step(input bit [4:0] active);
         begin
             @(posedge clk);
             #1;
@@ -135,23 +147,26 @@ module tb_top;
             if (active[1] && dvalid_b) begin seen_b[seen_b_n] = dout_b; seen_b_n++; end
             if (active[2] && dvalid_c) begin seen_c[seen_c_n] = dout_c; seen_c_n++; end
             if (active[3] && dvalid_d) begin seen_d[seen_d_n] = dout_d; seen_d_n++; end
+            if (active[4] && dvalid_e) begin seen_e[seen_e_n] = dout_e; seen_e_n++; end
             step_count++;
         end
     endtask
 
     // Run until every DUT sits on HLT, or MAX_STEPS is exceeded.
-    task automatic run_all(output bit [3:0] halted);
-        bit [3:0] done;
+    task automatic run_all(output bit [4:0] halted);
+        bit [4:0] done;
         begin
-            done       = 4'b0000;
-            halted     = 4'b0000;
+            done       = 5'b00000;
+            halted     = 5'b00000;
             step_count = 0;
-            while ((done != 4'b1111) && (step_count < MAX_STEPS)) begin
-                if (!done[0] && (dut_a.rom_data[7:4] == OP_HLT)) done[0] = 1'b1;
-                if (!done[1] && (dut_b.rom_data[7:4] == OP_HLT)) done[1] = 1'b1;
-                if (!done[2] && (dut_c.rom_data[7:4] == OP_HLT)) done[2] = 1'b1;
-                if (!done[3] && (dut_d.rom_data[7:4] == OP_HLT)) done[3] = 1'b1;
-                if (done == 4'b1111) break;
+            while ((done != 5'b11111) && (step_count < MAX_STEPS)) begin
+                // the CPU reports its own halt state
+                if (!done[0] && !iv_a) done[0] = 1'b1;
+                if (!done[1] && !iv_b) done[1] = 1'b1;
+                if (!done[2] && !iv_c) done[2] = 1'b1;
+                if (!done[3] && !iv_d) done[3] = 1'b1;
+                if (!done[4] && !iv_e) done[4] = 1'b1;
+                if (done == 5'b11111) break;
                 step(~done);
             end
             halted = done;
@@ -283,6 +298,48 @@ module tb_top;
         end
     endtask
 
+    task automatic report_seq_e();
+        begin
+            if (seen_e_n != exp_e_n) begin
+                fail_count++;
+                $display("  FAIL  %-28s got=%0d  exp=%0d", "out_e count", seen_e_n, exp_e_n);
+            end else begin
+                pass_count++;
+                $display("  PASS  %-28s got=%0d", "out_e count", seen_e_n);
+            end
+            for (int i = 0; i < exp_e_n && i < seen_e_n; i++) begin
+                if (seen_e[i] === exp_e[i]) begin
+                    pass_count++;
+                    $display("  PASS  %-28s got=0x%02h", $sformatf("out_e[%0d]", i), seen_e[i]);
+                end else begin
+                    fail_count++;
+                    $display("  FAIL  %-28s got=0x%02h  exp=0x%02h",
+                             $sformatf("out_e[%0d]", i), seen_e[i], exp_e[i]);
+                end
+            end
+        end
+    endtask
+
+    // After HLT the PC, the accumulator and the memory write must all be frozen.
+    // Runs 5 extra cycles, which is well past where a runaway PC would have
+    // executed the marker instruction planted after HLT.
+    task automatic freeze_check();
+        logic [ROM_ADDR_WIDTH-1:0] pc0;
+        logic [DATA_WIDTH-1:0]     a0, m0;
+        begin
+            pc0 = dut_a.rom_addr;
+            a0  = dut_a.cpu_inst.A;
+            m0  = dut_a.mem_inst.mem[0];
+
+            repeat (5) @(posedge clk);
+            #1;
+
+            check("PC still at HLT",      dut_a.rom_addr,            pc0);
+            check("A unchanged after HLT", dut_a.cpu_inst.A,          a0);
+            check("M[0] unchanged",        dut_a.mem_inst.mem[0],     m0);
+            check("instr_valid low",       {31'b0, dut_a.instr_valid}, 32'd0);
+        end
+    endtask
     // ---------------------------------------------------------------------------
     // Cycle trace of DUT B, enabled with +trace
     // ---------------------------------------------------------------------------
@@ -290,7 +347,7 @@ module tb_top;
         begin
             $display("");
             $display("  [trace] t   PC   instr  addr  mem_rdata  wr   A      M[1]");
-            while (dut_b.rom_data[7:4] != OP_HLT) begin
+            while (iv_b) begin
                 $display("  [trace] %0d   %0d    0x%02h   0x%0h    0x%02h      %0b   0x%02h  0x%02h",
                          step_count, dut_b.rom_addr, dut_b.rom_data,
                          dut_b.mem_addr, dut_b.mem_rdata, dut_b.mem_wr,
@@ -307,24 +364,25 @@ module tb_top;
     // ---------------------------------------------------------------------------
     // Test sequence
     // ---------------------------------------------------------------------------
-    bit [3:0] halted;
+    bit [4:0] halted;
 
     initial begin
         $dumpfile("build/tb_top.vcd");
         $dumpvars(0, tb_top);
 
         rst = 1'b1;
-        seen_a_n = 0; seen_b_n = 0; seen_c_n = 0; seen_d_n = 0;
+        seen_a_n = 0; seen_b_n = 0; seen_c_n = 0; seen_d_n = 0; seen_e_n = 0;
 
         // expected output sequences, from the program listings
         exp_a_n = 1; exp_a[0] = 8'h0F;
         exp_b_n = 1; exp_b[0] = 8'h01;
         exp_c_n = 1; exp_c[0] = 8'h0A;
         exp_d_n = 1; exp_d[0] = 8'h0A;
+        exp_e_n = 1; exp_e[0] = 8'h0A;
 
         $display("");
         $display("==============================================================");
-        $display(" 8-bit CPU testbench  -- 4 programs run in parallel");
+        $display(" 8-bit CPU testbench  -- 5 programs run in parallel");
         $display("==============================================================");
 
         do_reset();
@@ -335,8 +393,8 @@ module tb_top;
         run_all(halted);
 
         $display("");
-        $display(" halted: A=%0b B=%0b C=%0b D=%0b   steps=%0d",
-                 halted[0], halted[1], halted[2], halted[3], step_count);
+        $display(" halted: A=%0b B=%0b C=%0b D=%0b E=%0b   steps=%0d",
+                 halted[0], halted[1], halted[2], halted[3], halted[4], step_count);
 
         // -----------------------------------------------------------------------
         $display("");
@@ -347,6 +405,29 @@ module tb_top;
         check("M[0]",    dut_a.mem_inst.mem[0], 8'h0F);
         report_seq_a();
         dump("prog A", dut_a.cpu_inst.A, dut_a.mem_inst.mem[0], dut_a.mem_inst.mem[1]);
+
+        // -----------------------------------------------------------------------
+        // Carry must reach the branch. program_e underflows 0x00-0x01 to 0xFF,
+        // adds 0x01 to get 0x00 with C=1, then relies on JC landing on a
+        // different arm than the fall-through. The two arms OUT different values, so the
+        // check fails if the carry is wrong. The old `result < a` carry test
+        // missed this wrap and the fall-through arm would output 0x00.
+        // -----------------------------------------------------------------------
+        $display("");
+        $display("[TEST 5] program_e.hex  EXPECT PASS");
+        $display("         0x00-0x01 underflows to 0xFF, +0x01 carries, JC 0x9 -> OUT 0x0A");
+        check_hlt("HLT reached", halted[4]);
+        report_seq_e();
+        dump("prog E", dut_e.cpu_inst.A, dut_e.mem_inst.mem[0], dut_e.mem_inst.mem[1]);
+
+        // -----------------------------------------------------------------------
+        // HLT must actually stop the machine. program_a has a LDI 0x01 planted at
+        // address 07, right after its HLT: if the CPU keeps fetching, A becomes
+        // 0x01 and the PC advances past the end of the program. Both are checked.
+        // -----------------------------------------------------------------------
+        $display("");
+        $display("[TEST 6] HLT stops the CPU");
+        freeze_check();
 
         // -----------------------------------------------------------------------
         $display("");
@@ -385,6 +466,8 @@ module tb_top;
         $display(" TEST 2 (ADD / SUB)            : %s", (seen_b_n == 1 && seen_b[0] === 8'h01) ? "PASS" : "FAIL");
         $display(" TEST 3 (load with gap)        : %s", (seen_c_n == 1 && seen_c[0] === 8'h0A) ? "PASS" : "FAIL");
         $display(" TEST 4 (gap-less load)        : %s", (seen_d_n == 1 && seen_d[0] === 8'h0A) ? "PASS" : "FAIL");
+        $display(" TEST 5 (carry reaches JC)     : %s", (seen_e_n == 1 && seen_e[0] === 8'h0A) ? "PASS" : "FAIL");
+        $display(" TEST 6 (HLT freezes the CPU)  : %s", (dut_a.instr_valid === 1'b0) ? "PASS" : "FAIL");
         $display("--------------------------------------------------------------");
         $display(" MEM reads combinationally (assign rdata = mem[addr]), so a load");
         $display(" sees the value stored in the same cycle. A registered read here");

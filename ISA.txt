@@ -5,9 +5,9 @@ LDA	0000	LDA addr	0x0_	A ← M[addr]	取数
 ADD	0001	ADD addr	0x1_	A ← A + M[addr]	加法
 SUB	0010	SUB addr	0x2_	A ← A - M[addr]	减法
 STA	0011	STA addr	0x3_	M[addr] ← A	存数
-LDI	0100	LDI imm	0x4_	A ← imm	立即数
+LDI	0100	LDI imm	0x4_	A ← imm	立即数（仅低 4 位：0x0–0xF）
 JMP	0101	JMP addr	0x5_	PC ← addr	无条件跳转
-JZ	0110	JZ addr	0x6_	if Z=1 then PC ← addr	零跳转
-JC	0111	JC addr	0x7_	if C=1 then PC ← addr	进位跳转
+JC	0110	JC addr	0x6_	if C=1 then PC ← addr	进位跳转
+JZ	0111	JZ addr	0x7_	if Z=1 then PC ← addr	零跳转
 OUT	1110	OUT	0xE0	Output ← A	输出
 HLT	1111	HLT	0xF0	停时钟	停机

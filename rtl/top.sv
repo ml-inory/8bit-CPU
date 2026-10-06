@@ -8,7 +8,8 @@ module top #(
 ) (
     input  logic clk,
     input  logic rst,
-    output logic [DATA_WIDTH-1:0] out
+    output logic [DATA_WIDTH-1:0] out,
+    output logic instr_valid
 );
     logic [ROM_ADDR_WIDTH-1:0] rom_addr;
     logic [MEM_ADDR_WIDTH-1:0] mem_addr;
@@ -30,7 +31,8 @@ module top #(
         .mem_addr(mem_addr),
         .mem_wr(mem_wr),
         .mem_wdata(mem_wdata),
-        .out(out)
+        .out(out),
+        .instr_valid(instr_valid)
     );
 
     ROM #(

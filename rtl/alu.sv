@@ -25,6 +25,10 @@ module ALU #(
     output reg               carry_out,
     output logic             wr
 );
+    logic [WIDTH:0] sum;   // one bit wider, so the carry out is visible
+
+    assign sum = {1'b0, a} + {1'b0, b};
+
     always_comb begin
         case (op)
             4'b0000: result = b;               // LDA
@@ -46,7 +50,11 @@ module ALU #(
     always_ff @(posedge clk) begin
         if (op == 4'b0001 || op == 4'b0010) begin
             zero <= (result == {WIDTH{1'b0}});
-            carry_out <= (op == 4'b0001) ? (result < a) : (op == 4'b0010) ? (a < b) : 1'b0;
+            // ADD: carry out of the adder.
+            // SUB: borrow, i.e. a < b.
+            // The carry must come from the widened sum: `result < a` misses the
+            // case where the sum wraps all the way round, e.g. 0x80 + 0x80.
+            carry_out <= (op == 4'b0001) ? sum[WIDTH] : (op == 4'b0010) ? (a < b) : 1'b0;
         end else begin
             zero <= 1'b0;
             carry_out <= 1'b0;
