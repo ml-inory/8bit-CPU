@@ -1,19 +1,32 @@
+`timescale 1ns / 1ps
 `default_nettype none
 
 // -----------------------------------------------------------------------------
 // tb_tap -- testbench-only observation helper (NOT part of the CPU).
 //
-// `top.out` is combinational: it presents A while op == OUT and 0 otherwise.
-// A testbench that reads it after the clock edge misses the value, because by
-// then the PC has advanced and the OUT instruction has left the ROM address
-// bus.
+// `top.out` is combinational: `out = (op == OUT) ? A : 0`. It is awkward to
+// observe for two reasons:
 //
-// This tap latches the real `top.out` pin on the rising edge of the cycle in
-// which the OUT instruction is present in the ROM, and raises `dout_valid` for
-// one cycle. It observes; it never drives the CPU.
+//   1. it drops back to 0 as soon as the OUT instruction leaves the ROM address
+//      bus, so it is only meaningful during the OUT cycle;
+//   2. it depends on the accumulator, which the rising edge updates. Sampling
+//      `out` at that same edge yields the previous instruction's result.
+//
+// This tap uses a half-cycle discipline instead of racing the edge:
+//
+//   rising edge   -- the DUT updates its registers
+//   falling edge  -- registers and the combinational `out` have settled, and the
+//                    instruction is still on the ROM bus; one settled sample is
+//                    taken to the `sig`/`val` stage
+//   next falling  -- that sample is presented on dout/dout_valid
+//
+// dout and dout_valid are registered from a single sample point and presented
+// together, so they always agree. The testbench reads them at the falling edge.
+//
+// It observes; it never drives the CPU.
 // -----------------------------------------------------------------------------
 
-module tb_tap (
+module tb_tap #(parameter CAPTURE_DELAY = 2) (
     input  logic       clk,
     input  logic       rst,
     input  logic [7:0] rom_data,   // word currently addressed by the PC
@@ -21,20 +34,24 @@ module tb_tap (
     output logic [7:0] dout,
     output logic       dout_valid
 );
-    logic [7:0] dout_q;
-    logic       valid_q;
+    logic [7:0] sig;
+    logic       val;
 
-    always_ff @(posedge clk) begin
+    always @(negedge clk) begin
         if (rst) begin
-            dout_q  <= 8'h00;
-            valid_q <= 1'b0;
+            sig <= 8'h00;
+            val <= 1'b0;
         end else begin
-            valid_q <= (rom_data[7:4] == 4'b1110);
-            if (rom_data[7:4] == 4'b1110)
-                dout_q <= top_out;
+            #CAPTURE_DELAY;
+            if (rom_data[7:4] == 4'b1110) begin
+                sig <= top_out;      // settled: A has the OUT instruction's result
+                val <= 1'b1;
+            end else begin
+                val <= 1'b0;
+            end
         end
     end
 
-    assign dout       = dout_q;
-    assign dout_valid = valid_q;
+    assign dout       = sig;
+    assign dout_valid = val;
 endmodule
