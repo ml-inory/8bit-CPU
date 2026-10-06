@@ -1,0 +1,22 @@
+# simulator output
+build/
+*.vcd
+*.lxt
+*.lxt2
+*.fst
+*.ghw
+
+# iverilog / verilator artefacts
+*.out
+*.vvp
+obj_dir/
+
+# Logisim autosave / backup
+*.circ~
+*.bak
+
+# editor / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
