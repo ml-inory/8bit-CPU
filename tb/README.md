@@ -57,17 +57,22 @@ Reading `out` any later races the PC increment and silently observes `0`.
 ## Current result
 
 ```
-RESULT: 15 passed, 3 failed
- TEST 1 (load with gap)        : PASS
- TEST 2 (ALU, gap before load) : FAIL
- TEST 3 (load path sanity)     : PASS
- TEST 4 (back-to-back ld/st)   : FAIL
+RESULT: 18 passed, 0 failed
+ TEST 1 (basic ld/st/out)      : PASS
+ TEST 2 (ADD / SUB)            : PASS
+ TEST 3 (load with gap)        : PASS
+ TEST 4 (gap-less load)        : PASS
 ```
 
-`TEST 2` and `TEST 4` fail because of a memory read timing hazard in `MEM`/
-`CPU`. See the "Known issue" section of the top-level `README.md`.
+Exit status is `0`.
 
-`HLT` is not currently implemented in the RTL — `cpu.sv` decodes opcode `1111`
-but does not stop the PC — so the testbench treats "the ROM word at the current
-PC is `HLT`" as the end of each program rather than waiting for the design to
-halt itself.
+Tests 3 and 4 are the regression guards for the memory read path. They
+previously failed because `MEM.rdata` was a registered output, so a load-type
+opcode consumed the previous cycle's data. The RTL now reads `MEM`
+combinationally (`assign rdata = mem[addr];`). If someone reintroduces a
+registered read, test 4 fails again.
+
+`HLT` is still not implemented in the RTL — `cpu.sv` decodes opcode `1111` but
+does not stop the PC — so the testbench treats "the ROM word at the current PC
+is `HLT`" as the end of each program rather than waiting for the design to halt
+itself.
